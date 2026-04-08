@@ -15,6 +15,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check-compat.js"></script>
   <style>
     :root {
       --bg:#e8fff0;--bg-soft:#d8f9e4;--panel:rgba(255,255,255,.88);--panel-soft:rgba(255,255,255,.72);
@@ -381,6 +382,8 @@
     databaseURL: "https://aderencia-atividades-default-rtdb.firebaseio.com"
   };
 
+  const appCheckSiteKey = "6LfmD6wsAAAAAGlwvX2F5zOU9zsn4JoSouaunoJ2";
+
   let db = null;
   let fbApp = null;
   let fbAuth = null;
@@ -547,11 +550,15 @@
   // ===== FIREBASE =====
   function initFirebase() {
     try {
-      fbApp = firebase.initializeApp(firebaseConfig);
+      fbApp = firebase.apps.length ? firebase.app() : firebase.initializeApp(firebaseConfig);
+
+      const appCheck = firebase.appCheck();
+      appCheck.activate(appCheckSiteKey, true);
+
       fbAuth = firebase.auth();
       fbDb = firebase.database();
-      console.log('✅ Firebase inicializado');
-      $('fbStatus').textContent = '✅ Firebase conectado - Faça login';
+      console.log('✅ Firebase + App Check inicializados');
+      $('fbStatus').textContent = '✅ Firebase protegido - Faça login';
       fbAuth.onAuthStateChanged(user => {
         currentUser = user;
         if (user) {
@@ -564,7 +571,7 @@
       });
       return true;
     } catch (err) {
-      console.error('❌ Firebase erro:', err);
+      console.error('❌ Firebase/App Check erro:', err);
       $('fbStatus').textContent = '❌ Erro Firebase: ' + err.message;
       $('fbStatus').classList.add('offline');
       return false;
