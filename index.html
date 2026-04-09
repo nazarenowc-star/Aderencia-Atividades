@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <script src="https://unpkg.com/dexie@3.2.4/dist/dexie.min.js"></script>
@@ -111,7 +112,7 @@
     .gauge-txt{display:none}
     .gauge-sub{color:#2f5f49;font-size:.98rem;font-weight:600;letter-spacing:.01em;text-shadow:0 1px 0 rgba(255,255,255,.32)}
     .scroll{overflow:auto;border-radius:18px;border:1px solid rgba(255,255,255,.06)}
-    table{width:100%;border-collapse:separate;border-spacing:0;min-width:920px;background:rgba(255,255,255,.02)}
+    table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120px;background:rgba(255,255,255,.02)}
     thead th{position:sticky;top:0;background:#1a3a2a;color:#eff6ff;text-align:left;font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;padding:12px 10px}
     th,td{padding:12px 10px;border-bottom:1px solid rgba(20,83,45,.1);vertical-align:top}
     tbody tr:nth-child(even){background:rgba(20,83,45,.02)}
@@ -188,6 +189,7 @@
     <button class="primary" id="btnNew">+ Nova atividade</button>
     <button id="btnExport">Exportar JSON</button>
     <label class="filebtn">Importar JSON<input type="file" id="importFile" accept=".json,application/json" /></label>
+    <label style="display:inline-flex;align-items:center;gap:8px;font-size:.9rem;color:#244c37;cursor:pointer"><input type="checkbox" id="importOnlyNew" /> Importar só IDs novos</label>
     <button id="btnPdf">PDF executivo</button>
     <button class="info" id="btnPresentation">📊 Relatório Apresentação</button>
     <button class="warning" id="btnToggleHidden">🙈 Mostrar ocultas</button>
@@ -220,7 +222,7 @@
       <button id="btnFbPull">📥 Baixar da nuvem</button>
       <button id="btnFbLogout">Sair</button>
     </div>
-    <div class="footer-help">Sistema usa IndexedDB (offline-first). Fotos são comprimidas automaticamente. Sincronize com Firebase para backup na nuvem e acesso multi-dispositivo.</div>
+    <div class="footer-help">IndexedDB (offline-first). <strong>Fotos:</strong> JSON com imagens <strong>soma</strong> às fotos locais (sem duplicar). Nuvem envia só <strong>contagens</strong> — ao baixar, <strong>não apaga</strong> fotos locais; dados da nuvem e JSON não se sobrescrevem de forma agressiva: texto vem da nuvem/JSON, imagens são <strong>unidas</strong> ao que já existe no aparelho.</div>
   </div>
 
   <div class="tab-nav" id="tabNav">
@@ -277,8 +279,9 @@
         <div class="formula-note" style="margin-top:12px">
           <strong>Cálculos automáticos:</strong><br>
           • <strong>% concluído</strong> = (Qtd. realizada ÷ Qtd. programada) × 100 — calculado automaticamente se houver quantidades.<br>
-          • <strong>% planejado</strong> = proporção de tempo decorrido entre início e término planejado — sempre automático baseado nas datas.<br>
-          • <strong>Aderência</strong> = (% realizado médio ÷ % planejado médio) × 100.
+          • <strong>% planejado</strong> = proporção de tempo entre início e <strong>término efetivo</strong> (reprogramado, se houver, senão planejado) até hoje — automático.<br>
+          • <strong>Aderência (lista e KPI global)</strong> ≈ (% real ÷ % esperado pelo tempo), com referência ao prazo efetivo; conclusão <strong>depois</strong> do prazo reduz o índice. O <strong>KPI “Aderência global”</strong> é a <strong>média</strong> dessas aderências por atividade (filtro atual). O gráfico <strong>“Aderência por estrutura”</strong> agrega por estrutura (média de % real vs. % plan. naquela estrutura) — pode diferir levemente do KPI se houver pesos diferentes.<br>
+          • <strong>Status</strong>: se passou o prazo efetivo e a atividade não está concluída (100%), o sistema define <strong>Atrasada</strong> automaticamente ao salvar.
         </div>
         <button type="button" class="secondary photo-trigger" id="btnTogglePhotos">📷 Fotos antes / depois</button>
         <div class="photo-panel hidden" id="photoPanel">
@@ -353,7 +356,7 @@
                 <tr>
                   <th><input type="checkbox" id="selectAllVisible" class="table-check" /></th>
                   <th>Tipo</th><th>Estrutura</th><th>Local</th><th>Ação</th><th>Resp.</th>
-                  <th>%C</th><th>%P</th><th>Status</th><th>Fim plan.</th><th>Fim real</th>
+                  <th>%C</th><th>%P</th><th>Ader.</th><th>Status</th><th>Prazo</th><th>Dias</th><th>Fim real</th>
                   <th>Antes / depois</th><th>Ações</th>
                 </tr>
               </thead>
@@ -389,6 +392,7 @@
   let fbAuth = null;
   let fbDb = null;
   let charts = {};
+  let datalabelsEnabled = false;
   let activities = [];
   let editingId = null;
   let currentPhotos = { before: [], after: [] };
@@ -403,6 +407,21 @@
   const pctText = (v) => isFinite(v) ? (Math.round(v * 1000) / 10).toFixed(1).replace('.', ',') + '%' : '0,0%';
   const mean = (arr) => { const a = arr.filter(v => typeof v === 'number' && !Number.isNaN(v)); return a.length ? a.reduce((s,v)=>s+v,0)/a.length : 0; };
   const uniq = (arr) => [...new Set(arr.filter(Boolean).map(v => String(v).trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  /** Evita duplicar a mesma imagem (base64) ao mesclar JSON + nuvem. */
+  function dedupePhotoList(arr) {
+    const seen = new Set();
+    const out = [];
+    (arr || []).forEach((s) => {
+      const k = typeof s === 'string' ? s.slice(0, 200) : String(s);
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push(s);
+    });
+    return out;
+  }
+  function mergePhotoArrays(local, incoming) {
+    return dedupePhotoList([...(local || []), ...(incoming || [])]);
+  }
   const norm = (s) => String(s ?? '').normalize('NFD').replace(/\p{M}/gu,'').toLowerCase().trim();
   const parseDate = (v) => {
     if (!v) return null;
@@ -416,10 +435,93 @@
   const formatDate = (v) => { const d = parseDate(v); return d ? d.toLocaleDateString('pt-BR') : '—'; };
   const daysBetween = (a,b) => Math.round((b-a)/(24*3600*1000));
 
+  // ===== Prazo efetivo = reprogramado ou planejado =====
+  function effectiveEndDate(a) {
+    return parseDate(a.fimReprog || a.fimPlan);
+  }
+
+  // ===== % planejado numa data de referência (ex.: hoje ou término real) =====
+  function plannedProgressAtDate(a, refD) {
+    const ini = parseDate(a.iniPlan);
+    const fim = effectiveEndDate(a);
+    const d = refD instanceof Date ? new Date(refD) : parseDate(refD);
+    if (!d || isNaN(d)) return 0;
+    const today = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12);
+    if (!ini && !fim) return 0;
+    if (!ini && fim) return today >= fim ? 1 : 0;
+    if (ini && !fim) return today >= ini ? 1 : 0;
+    if (today <= ini) return 0;
+    if (today >= fim) return 1;
+    const total = Math.max(1, daysBetween(ini, fim));
+    const done = Math.max(0, daysBetween(ini, today));
+    return Math.max(0, Math.min(1, done / total));
+  }
+
+  /** Aderência por atividade: real vs esperado pelo tempo; conclusão após prazo reduz o índice. */
+  function computeActivityAdherence(a) {
+    const pctR = getEffectivePctConc(a);
+    const lim = effectiveEndDate(a);
+    const ini = parseDate(a.iniPlan);
+    const st = String(a.status || '').trim();
+    const isDone = st === 'Concluída' || (pctR >= 99.5 && st !== 'Não iniciada');
+    const refD = isDone && parseDate(a.fimReal) ? parseDate(a.fimReal) : new Date();
+    const pctP = plannedProgressAtDate(a, refD) * 100;
+    let ratio = pctP > 0.05 ? pctR / pctP : (pctR > 0 ? 1 : 0);
+    ratio = Math.min(2, Math.max(0, ratio));
+    let score = ratio * 100;
+    if (isDone && lim && parseDate(a.fimReal)) {
+      const fr = parseDate(a.fimReal);
+      if (fr > lim) {
+        const daysLate = Math.max(0, daysBetween(lim, fr));
+        const span = Math.max(1, daysBetween(ini || lim, lim));
+        const lateFactor = Math.min(1, daysLate / (span + daysLate));
+        score *= 1 - lateFactor * 0.95;
+      }
+    }
+    return Math.max(0, Math.min(150, score));
+  }
+
+  /** Dias relativos ao prazo efetivo — para coluna na lista. */
+  function formatDeadlineDelta(a) {
+    const lim = effectiveEndDate(a);
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    if (!lim) return { text: '—', cls: '' };
+    const fr = parseDate(a.fimReal);
+    const st = String(a.status || '').trim();
+    if (st === 'Concluída') {
+      if (!fr) return { text: '—', cls: '' };
+      if (fr > lim) {
+        const d = daysBetween(lim, fr);
+        return { text: '+' + d + ' após prazo', cls: 'warn' };
+      }
+      const early = daysBetween(fr, lim);
+      if (early > 0) return { text: early + ' d antec.', cls: 'ok' };
+      return { text: 'no prazo', cls: 'ok' };
+    }
+    const raw = daysBetween(today, lim);
+    if (raw > 0) return { text: 'faltam ' + raw + ' d', cls: 'ok' };
+    if (raw === 0) return { text: 'vence hoje', cls: 'warn' };
+    return { text: Math.abs(raw) + ' d em atraso', cls: 'bad' };
+  }
+
+  /** Passou o prazo efetivo e não concluiu → Atrasada (automático). */
+  function applyAutomaticStatus(a) {
+    const lim = effectiveEndDate(a);
+    if (!lim) return { ...a };
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    const pctR = getEffectivePctConc(a);
+    const complete = String(a.status || '').trim() === 'Concluída' || pctR >= 99.5;
+    if (complete) return { ...a };
+    if (today > lim) return { ...a, status: 'Atrasada' };
+    return { ...a };
+  }
+
   // ===== NORMALIZAR - FIX: "0" não é mais tratado como null =====
   function normalizeActivity(a = {}) {
     const safeNum = (v) => (v === '' || v == null || v === undefined) ? null : (Number.isNaN(Number(v)) ? null : Number(v));
-    return {
+    const raw = {
       id: a.id || uid(),
       tipo: a.tipo || '',
       estrutura: a.estrutura || '',
@@ -445,6 +547,7 @@
       photosAfter: Array.isArray(a.photosAfter) ? a.photosAfter : [],
       updatedAt: a.updatedAt || new Date().toISOString()
     };
+    return applyAutomaticStatus(raw);
   }
 
   // ===== AUTO-CALC % concluído from quantities =====
@@ -459,19 +562,11 @@
     return a.pctConc;
   }
 
-  // ===== % PLANEJADO - SEMPRE AUTOMÁTICO =====
+  // ===== % PLANEJADO - SEMPRE AUTOMÁTICO (prazo efetivo = reprogramado ou planejado) =====
   function calcPlannedProgress(a) {
-    const ini = parseDate(a.iniPlan);
-    const fim = parseDate(a.fimReprog || a.fimPlan);
-    const today = new Date(); today.setHours(12,0,0,0);
-    if (!ini && !fim) return 0;
-    if (!ini && fim) return today >= fim ? 1 : 0;
-    if (ini && !fim) return today >= ini ? 1 : 0;
-    if (today <= ini) return 0;
-    if (today >= fim) return 1;
-    const total = Math.max(1, daysBetween(ini, fim));
-    const done = Math.max(0, daysBetween(ini, today));
-    return Math.max(0, Math.min(1, done / total));
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    return plannedProgressAtDate(a, today);
   }
 
   // ===== EFFECTIVE % concluído =====
@@ -634,13 +729,27 @@
       const snap = await fbDb.ref('users/' + currentUser.uid + '/activities').once('value');
       const data = snap.val();
       if (data && Array.isArray(data)) {
-        if (confirm('Encontradas ' + data.length + ' atividades na nuvem.\nOK para SUBSTITUIR dados locais, Cancelar para MANTER.')) {
-          activities = data.map(a => {
-            a.photosBefore = []; a.photosAfter = [];
-            return normalizeActivity(a);
+        if (confirm('Encontradas ' + data.length + ' atividades na nuvem.\nOK para SUBSTITUIR mesclando: mantém fotos locais quando a nuvem só tem contagem.\nCancelar para MANTER tudo local.')) {
+          const localById = new Map(activities.map(a => [a.id, a]));
+          activities = data.map(cloud => {
+            const prev = localById.get(cloud.id);
+            const cB = cloud.photosBefore;
+            const cA = cloud.photosAfter;
+            const cloudHasBefore = Array.isArray(cB) && cB.length > 0 && typeof cB[0] === 'string' && String(cB[0]).startsWith('data:');
+            const cloudHasAfter = Array.isArray(cA) && cA.length > 0 && typeof cA[0] === 'string' && String(cA[0]).startsWith('data:');
+            const merged = { ...cloud };
+            const cloudArrB = Array.isArray(cB) ? cB : [];
+            const cloudArrA = Array.isArray(cA) ? cA : [];
+            if (prev) {
+              if (cloudHasBefore) merged.photosBefore = mergePhotoArrays(prev.photosBefore, cloudArrB);
+              else if (prev.photosBefore && prev.photosBefore.length) merged.photosBefore = prev.photosBefore;
+              if (cloudHasAfter) merged.photosAfter = mergePhotoArrays(prev.photosAfter, cloudArrA);
+              else if (prev.photosAfter && prev.photosAfter.length) merged.photosAfter = prev.photosAfter;
+            }
+            return normalizeActivity(merged);
           });
           await saveActivitiesToDB(); clearForm(); render();
-          alert('✅ ' + activities.length + ' atividades carregadas!');
+          alert('✅ ' + activities.length + ' atividades carregadas (fotos locais preservadas quando a nuvem não envia imagens).');
         }
       } else { alert('Nenhum dado na nuvem.'); }
       $('fbStatus').textContent = '✅ Sincronizado';
@@ -707,8 +816,10 @@
     const avgPlan = mean(data.map(a => calcPlannedProgress(a)));
     // % realizado médio (baseado em pctConc efetivo)
     const avgReal = mean(data.map(a => Math.max(0, Math.min(1, getEffectivePctConc(a)/100))));
-    // Aderência = realizado / planejado
-    const adherence = avgPlan > 0 ? Math.min(1.5, avgReal / avgPlan) : (avgReal > 0 ? 1 : 0);
+    // Aderência global = média da aderência por atividade (inclui prazo / atraso na conclusão)
+    const adhList = data.map(a => computeActivityAdherence(a)).filter(v => typeof v === 'number' && !Number.isNaN(v));
+    const adherenceMean = adhList.length ? mean(adhList) / 100 : 0;
+    const adherence = Math.min(1.5, adherenceMean);
     const done = data.filter(a => a.status === 'Concluída');
     const onTime = done.length ? done.filter(a => {
       const fr = parseDate(a.fimReal);
@@ -797,6 +908,9 @@
       const rowClass=a.hidden?'hidden-row':'';
       const effConc = getEffectivePctConc(a);
       const effPlan = (calcPlannedProgress(a)*100).toFixed(1);
+      const adh = computeActivityAdherence(a);
+      const dd = formatDeadlineDelta(a);
+      const ddCls = dd.cls === 'ok' ? 'pill ok' : dd.cls === 'bad' ? 'pill bad' : dd.cls === 'warn' ? 'pill warn' : 'pill info';
       return `<tr class="${rowClass}">
         <td><input type="checkbox" class="table-check" data-select="${a.id}" ${a.selected?'checked':''}></td>
         <td>${esc(a.tipo)}</td>
@@ -806,8 +920,10 @@
         <td>${esc(a.responsavel)}</td>
         <td>${effConc != null ? effConc.toFixed(0)+'%' : '—'}</td>
         <td>${effPlan}%</td>
+        <td title="Execução vs esperado pelo tempo; conclusão após prazo reduz">${isFinite(adh) ? adh.toFixed(0)+'%' : '—'}</td>
         <td><span class="status-pill ${cls}">${esc(a.status||'Não iniciada')}</span></td>
         <td>${formatDate(a.fimReprog||a.fimPlan)}</td>
+        <td><span class="${ddCls}" style="font-size:.78rem;padding:4px 8px">${esc(dd.text)}</span></td>
         <td>${formatDate(a.fimReal)}</td>
         <td>${photoPairHtml(a)}</td>
         <td class="row-actions">
@@ -860,15 +976,30 @@
 
   // ===== GRÁFICOS =====
   function destroyCharts() { Object.values(charts).forEach(c=>c&&c.destroy&&c.destroy()); charts={}; }
+  function initDatalabelsPlugin() {
+    if (datalabelsEnabled) return;
+    const DL = typeof ChartDataLabels !== 'undefined' ? ChartDataLabels : (typeof window !== 'undefined' ? window.ChartDataLabels : null);
+    if (DL) {
+      try { Chart.register(DL); datalabelsEnabled = true; } catch (e) { console.warn('chartjs-plugin-datalabels:', e); }
+    }
+  }
   function basePlugins() { return { legend:{labels:{color:'#64748b',usePointStyle:true,boxWidth:10}}, tooltip:{backgroundColor:'rgba(15,23,42,.96)',borderColor:'rgba(255,255,255,.1)',borderWidth:1,titleColor:'#fff',bodyColor:'#e2e8f0'} }; }
   function axisStyle() { return { ticks:{color:'#64748b'}, grid:{color:'#edf2f7'} }; }
+  function lineLabelFmt(value, ctx) {
+    if (value == null || Number.isNaN(Number(value))) return '';
+    const n = ctx.chart.data.labels?.length || 0;
+    const i = ctx.dataIndex;
+    if (n > 18) { const step = Math.max(1, Math.ceil(n / 16)); if (i % step !== 0 && i !== n - 1) return ''; }
+    return String(Math.round(Number(value)));
+  }
+  function dlMerge(extra) { return datalabelsEnabled ? { datalabels: { color:'#1e293b', font:{ weight:'600', size:10 }, ...extra } } : {}; }
 
   function makeGauge(canvasId, value) {
     const v=Math.max(0,Math.min(1,value));
     return new Chart($(canvasId), {
       type:'doughnut',
       data:{datasets:[{data:[v,1-v],backgroundColor:['#1e4a6e','#d8e1eb'],borderWidth:0,cutout:'74%'}]},
-      options:{rotation:-90,circumference:180,responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false}}},
+      options:{rotation:-90,circumference:180,responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false},datalabels:{display:false}}},
       plugins:[{id:'gaugeCenterValue',afterDraw(chart){const{ctx,chartArea}=chart;if(!chartArea)return;const pct=(v*100).toFixed(1).replace('.',',')+' %';const cx=(chartArea.left+chartArea.right)/2;const cy=chartArea.top+(chartArea.bottom-chartArea.top)*0.72;ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#214f39';ctx.font='600 18px Inter, sans-serif';ctx.fillText(pct,cx,cy);ctx.restore();}}]
     });
   }
@@ -934,48 +1065,57 @@
       type:'line', data:{labels:timeline.labels,datasets:[
         {label:'Planejado acum.',data:timeline.planned,borderColor:'#1e4a6e',backgroundColor:'rgba(30,74,110,.12)',tension:.25,borderWidth:3},
         {label:'Realizado acum.',data:timeline.realized,borderColor:'#10b981',backgroundColor:'rgba(16,185,129,.12)',tension:.25,borderWidth:3}
-      ]}, options:{responsive:true,maintainAspectRatio:false,plugins:basePlugins(),scales:{x:axisStyle(),y:axisStyle()}}
+      ]}, options:{responsive:true,maintainAspectRatio:false,plugins:{...basePlugins(),...dlMerge({anchor:'end',align:'top',offset:-2,formatter:lineLabelFmt})},scales:{x:axisStyle(),y:axisStyle()}}
     });
 
     const statusMap=groupCount(data,a=>a.status||'Não iniciada');
     const stLabels=['Concluída','Em andamento','Atrasada','Reprogramada','Não iniciada'].filter(k=>statusMap.get(k)!=null);
     const stColors=['#10b981','#3b82f6','#ef4444','#f59e0b','#8b5cf6'];
 
-    charts.status=new Chart($('chartStatus'),{type:'bar',data:{labels:stLabels,datasets:[{label:'Qtd',data:stLabels.map(k=>statusMap.get(k)||0),backgroundColor:stColors,borderRadius:10}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip},scales:{x:axisStyle(),y:axisStyle()}}});
+    charts.status=new Chart($('chartStatus'),{type:'bar',data:{labels:stLabels,datasets:[{label:'Qtd',data:stLabels.map(k=>statusMap.get(k)||0),backgroundColor:stColors,borderRadius:10}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip,...dlMerge({anchor:'end',align:'top',formatter:(v)=>v>0?String(v):''})},scales:{x:axisStyle(),y:axisStyle()}}});
 
     const estr=topEntries(groupCount(data,a=>a.estrutura),10);
-    charts.estrutura=new Chart($('chartEstrutura'),{type:'bar',data:{labels:estr.map(x=>x[0]),datasets:[{label:'Atividades',data:estr.map(x=>x[1]),backgroundColor:'#1e4a6e',borderRadius:10}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip},scales:{x:axisStyle(),y:{...axisStyle(),grid:{display:false}}}}});
+    charts.estrutura=new Chart($('chartEstrutura'),{type:'bar',data:{labels:estr.map(x=>x[0]),datasets:[{label:'Atividades',data:estr.map(x=>x[1]),backgroundColor:'#1e4a6e',borderRadius:10}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip,...dlMerge({anchor:'end',align:'end',offset:4,formatter:(v)=>v>0?String(v):''})},scales:{x:axisStyle(),y:{...axisStyle(),grid:{display:false}}}}});
 
     const tipo=topEntries(groupCount(data.filter(a=>['Atrasada','Reprogramada','Em andamento'].includes(a.status)||classifyLate(a)),a=>a.tipo),10);
-    charts.tipo=new Chart($('chartTipo'),{type:'bar',data:{labels:tipo.map(x=>x[0]),datasets:[{label:'Backlog',data:tipo.map(x=>x[1]),backgroundColor:'#ef4444',borderRadius:10}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip},scales:{x:axisStyle(),y:{...axisStyle(),grid:{display:false}}}}});
+    charts.tipo=new Chart($('chartTipo'),{type:'bar',data:{labels:tipo.map(x=>x[0]),datasets:[{label:'Backlog',data:tipo.map(x=>x[1]),backgroundColor:'#ef4444',borderRadius:10}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip,...dlMerge({anchor:'end',align:'end',offset:4,formatter:(v)=>v>0?String(v):''})},scales:{x:axisStyle(),y:{...axisStyle(),grid:{display:false}}}}});
 
     const paretoResp=topEntries(groupCount(data.filter(a=>['Atrasada','Reprogramada'].includes(a.status)||classifyLate(a)),a=>a.responsavel),8);
     let acc=0;const totalP=paretoResp.reduce((s,x)=>s+x[1],0)||1;
     const cumResp=paretoResp.map(x=>(acc+=x[1],+(acc/totalP*100).toFixed(1)));
-    charts.paretoResp=new Chart($('chartParetoResponsavel'),{data:{labels:paretoResp.map(x=>x[0]),datasets:[{type:'bar',label:'Desvios',data:paretoResp.map(x=>x[1]),backgroundColor:'#f59e0b',borderRadius:10},{type:'line',label:'Acum %',data:cumResp,yAxisID:'y1',borderColor:'#1e4a6e',tension:.25,borderWidth:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:basePlugins(),scales:{x:axisStyle(),y:axisStyle(),y1:{position:'right',min:0,max:100,ticks:{color:'#64748b',callback:v=>v+'%'},grid:{display:false}}}}});
+    charts.paretoResp=new Chart($('chartParetoResponsavel'),{data:{labels:paretoResp.map(x=>x[0]),datasets:[
+      {type:'bar',label:'Desvios',data:paretoResp.map(x=>x[1]),backgroundColor:'#f59e0b',borderRadius:10,datalabels:{anchor:'end',align:'top',color:'#78350f',formatter:(v)=>v>0?String(v):''}},
+      {type:'line',label:'Acum %',data:cumResp,yAxisID:'y1',borderColor:'#1e4a6e',tension:.25,borderWidth:3,datalabels:{anchor:'end',align:'top',color:'#1e4a6e',formatter:(v,ctx)=>{const i=ctx.dataIndex;if(i%2===1&&i>0)return'';return v!=null?v+'%':''}}}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:basePlugins(),scales:{x:axisStyle(),y:axisStyle(),y1:{position:'right',min:0,max:100,ticks:{color:'#64748b',callback:v=>v+'%'},grid:{display:false}}}}});
 
     const sCurve=buildSCurve(data);
-    charts.scurve=new Chart($('chartSCurve'),{type:'line',data:{labels:sCurve.labels,datasets:[{label:'Plan. %',data:sCurve.planned,borderColor:'#94a3b8',backgroundColor:'rgba(148,163,184,.18)',tension:.25,borderWidth:3},{label:'Real. %',data:sCurve.realized,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.14)',tension:.25,borderWidth:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:basePlugins(),scales:{x:axisStyle(),y:{...axisStyle(),min:0,max:100}}}});
+    charts.scurve=new Chart($('chartSCurve'),{type:'line',data:{labels:sCurve.labels,datasets:[{label:'Plan. %',data:sCurve.planned,borderColor:'#94a3b8',backgroundColor:'rgba(148,163,184,.18)',tension:.25,borderWidth:3},{label:'Real. %',data:sCurve.realized,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,.14)',tension:.25,borderWidth:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{...basePlugins(),...dlMerge({anchor:'end',align:'top',formatter:lineLabelFmt})},scales:{x:axisStyle(),y:{...axisStyle(),min:0,max:100}}}});
 
     const structAdhBase=new Map();
     data.forEach(a=>{const k=a.estrutura||'N/I';if(!structAdhBase.has(k))structAdhBase.set(k,{real:0,plan:0});structAdhBase.get(k).real+=getEffectivePctConc(a)/100;structAdhBase.get(k).plan+=calcPlannedProgress(a);});
     const structLabels=[...structAdhBase.keys()].slice(0,12);
     const structVals=structLabels.map(k=>{const o=structAdhBase.get(k);return o.plan>0?Math.min(150,o.real/o.plan*100):0;});
-    charts.structAdh=new Chart($('chartStructAdherence'),{type:'bar',data:{labels:structLabels,datasets:[{label:'Aderência %',data:structVals,backgroundColor:'#1e4a6e',borderRadius:10}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip},scales:{x:{...axisStyle(),min:0,max:150},y:{...axisStyle(),grid:{display:false}}}}});
+    charts.structAdh=new Chart($('chartStructAdherence'),{type:'bar',data:{labels:structLabels,datasets:[{label:'Aderência %',data:structVals,backgroundColor:'#1e4a6e',borderRadius:10}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip,...dlMerge({anchor:'end',align:'end',offset:4,formatter:(v)=>v>0?Math.round(v)+'%':''})},scales:{x:{...axisStyle(),min:0,max:150},y:{...axisStyle(),grid:{display:false}}}}});
 
-    charts.donut=new Chart($('chartDonut'),{type:'doughnut',data:{labels:stLabels,datasets:[{data:stLabels.map(k=>statusMap.get(k)||0),backgroundColor:stColors,borderColor:'#fff',borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:{tooltip:basePlugins().tooltip,legend:{position:'bottom',labels:{color:'#64748b'}}}}});
+    charts.donut=new Chart($('chartDonut'),{type:'doughnut',data:{labels:stLabels,datasets:[{data:stLabels.map(k=>statusMap.get(k)||0),backgroundColor:stColors,borderColor:'#fff',borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:{tooltip:basePlugins().tooltip,legend:{position:'bottom',labels:{color:'#64748b'}},...dlMerge({color:'#0f172a',font:{size:11,weight:'700'},formatter:(value,ctx)=>{const sum=ctx.dataset.data.reduce((a,b)=>a+b,0)||1;if(!value)return'';const p=Math.round(value/sum*100);return p>=5?p+'%':''}})}}});
 
     const avgConc=mean(data.map(a=>getEffectivePctConc(a)/100))*100;
     const avgPlan2=mean(data.map(a=>calcPlannedProgress(a)))*100;
-    charts.avg=new Chart($('chartAvg'),{type:'bar',data:{labels:['% concluído','% planejado'],datasets:[{data:[avgConc,avgPlan2],backgroundColor:['#3b82f6','#cbd5e1'],borderRadius:10}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip},scales:{x:axisStyle(),y:{...axisStyle(),min:0,max:100}}}});
+    charts.avg=new Chart($('chartAvg'),{type:'bar',data:{labels:['% concluído','% planejado'],datasets:[{data:[avgConc,avgPlan2],backgroundColor:['#3b82f6','#cbd5e1'],borderRadius:10}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:basePlugins().tooltip,...dlMerge({anchor:'end',align:'top',formatter:(v)=>Math.round(v)+'%'})},scales:{x:axisStyle(),y:{...axisStyle(),min:0,max:100}}}});
 
     const causeMap=groupCount(data.filter(a=>['Atrasada','Reprogramada'].includes(a.status)||classifyLate(a)).filter(a=>a.causaAtraso),a=>a.causaAtraso);
     const causeEntries=topEntries(causeMap,8);let accC=0;const causeTotal=causeEntries.reduce((s,x)=>s+x[1],0)||1;
     const causeCum=causeEntries.map(x=>(accC+=x[1],+(accC/causeTotal*100).toFixed(1)));
-    charts.paretoCause=new Chart($('chartParetoCausa'),{data:{labels:causeEntries.map(x=>x[0]),datasets:[{type:'bar',label:'Ocorrências',data:causeEntries.map(x=>x[1]),backgroundColor:'#8b5cf6',borderRadius:10},{type:'line',label:'Acum %',data:causeCum,yAxisID:'y1',borderColor:'#1e4a6e',tension:.25,borderWidth:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:basePlugins(),scales:{x:axisStyle(),y:axisStyle(),y1:{position:'right',min:0,max:100,ticks:{color:'#64748b',callback:v=>v+'%'},grid:{display:false}}}}});
+    charts.paretoCause=new Chart($('chartParetoCausa'),{data:{labels:causeEntries.map(x=>x[0]),datasets:[
+      {type:'bar',label:'Ocorrências',data:causeEntries.map(x=>x[1]),backgroundColor:'#8b5cf6',borderRadius:10,datalabels:{anchor:'end',align:'top',color:'#4c1d95',formatter:(v)=>v>0?String(v):''}},
+      {type:'line',label:'Acum %',data:causeCum,yAxisID:'y1',borderColor:'#1e4a6e',tension:.25,borderWidth:3,datalabels:{anchor:'end',align:'top',color:'#1e4a6e',formatter:(v,ctx)=>{const i=ctx.dataIndex;if(i%2===1&&i>0)return'';return v!=null?v+'%':''}}}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:basePlugins(),scales:{x:axisStyle(),y:axisStyle(),y1:{position:'right',min:0,max:100,ticks:{color:'#64748b',callback:v=>v+'%'},grid:{display:false}}}}});
 
     const gantt=buildGantt(data);
-    charts.gantt=new Chart($('chartGantt'),{type:'bar',data:{labels:gantt.labels,datasets:[{label:'Início',data:gantt.data.map(v=>v[0]),backgroundColor:'rgba(0,0,0,0)'},{label:'Duração',data:gantt.data.map(v=>v[1]),backgroundColor:'#3b82f6',borderRadius:8}]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',layout:{padding:{left:12,right:8,top:4,bottom:0}},plugins:{legend:{display:false},tooltip:{...basePlugins().tooltip,callbacks:{title(items){const i=items?.[0]?.dataIndex??0;return gantt.fullLabels[i]||'';}}}},scales:{x:{...axisStyle(),stacked:true,title:{display:true,text:'Dias'}},y:{...axisStyle(),stacked:true,grid:{display:false},ticks:{color:'#64748b',font:{size:11,weight:'500'},padding:6,autoSkip:false}}}}});
+    charts.gantt=new Chart($('chartGantt'),{type:'bar',data:{labels:gantt.labels,datasets:[
+      {label:'Início',data:gantt.data.map(v=>v[0]),backgroundColor:'rgba(0,0,0,0)',datalabels:{display:false}},
+      {label:'Duração',data:gantt.data.map(v=>v[1]),backgroundColor:'#3b82f6',borderRadius:8,datalabels:{anchor:'center',align:'center',color:'#fff',formatter:(v)=>v>0?v+' d':''}}
+    ]},options:{responsive:true,maintainAspectRatio:false,indexAxis:'y',layout:{padding:{left:12,right:8,top:4,bottom:0}},plugins:{legend:{display:false},tooltip:{...basePlugins().tooltip,callbacks:{title(items){const i=items?.[0]?.dataIndex??0;return gantt.fullLabels[i]||'';}}}},scales:{x:{...axisStyle(),stacked:true,title:{display:true,text:'Dias'}},y:{...axisStyle(),stacked:true,grid:{display:false},ticks:{color:'#64748b',font:{size:11,weight:'500'},padding:6,autoSkip:false}}}}});
   }
 
   function render() {
@@ -1002,6 +1142,137 @@
 
   function getReportActivities() { const s=getSelectedVisibleActivities(getVisibleFilteredActivities()); return s.length?s:getVisibleFilteredActivities(); }
 
+  function canvasPngDataUrl(canvasId) {
+    const el = typeof canvasId === 'string' ? $(canvasId) : canvasId;
+    if (!el || typeof el.toDataURL !== 'function') return null;
+    try { return el.toDataURL('image/png', 1.0); } catch (e) { return null; }
+  }
+
+  /** Dashboard visível; gráficos redesenhados com o mesmo array `data` do relatório (filtro e seleção atuais). */
+  async function ensureChartsReadyForPdf(data) {
+    const prevTab = document.querySelector('.tab-btn.active')?.dataset?.tab || 'dashboard';
+    setActiveTab('dashboard');
+    const metrics = computeMetrics(data);
+    renderCharts(data, metrics);
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      Object.values(charts).forEach((ch) => { if (ch && typeof ch.resize === 'function') ch.resize(); });
+    } catch (e) {}
+    await new Promise((r) => setTimeout(r, 100));
+    return () => {
+      setActiveTab(prevTab);
+      render();
+    };
+  }
+
+  /** Cabeçalho visual das páginas de gráficos no PDF (sem emoji — compatível com fonte padrão do jsPDF). */
+  function pdfChartPageHeader(doc, W, pageNum, totalPages) {
+    doc.setFillColor(236, 253, 245);
+    doc.rect(0, 0, W, 22, 'F');
+    doc.setFillColor(22, 101, 52);
+    doc.rect(0, 0, 5, 22, 'F');
+    doc.setTextColor(15, 81, 50);
+    doc.setFontSize(13);
+    doc.setFont('helvetica', 'bold');
+    doc.text('NAZA Audit — Graficos do relatorio', 14, 11);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(80, 120, 95);
+    doc.text('Mesmos filtros e dados da tabela acima (gerado na exportacao).', 14, 17);
+    doc.setTextColor(120, 150, 130);
+    doc.text('Pag. ' + pageNum + ' / ' + totalPages, W - 14, 11, { align: 'right' });
+  }
+
+  /** Inclui todos os gráficos do dashboard em páginas paisagem 2×2 + Gantt em página única. */
+  function pdfAppendChartsLandscape(doc, W, H) {
+    const m = 11;
+    const gap = 8;
+    const colW = (W - 2 * m - gap) / 2;
+    const rowH = 58;
+    const headerH = 22;
+    const grids = [
+      [
+        { t: 'Velocimetro — Aderencia global', id: 'gaugeAderencia' },
+        { t: 'Velocimetro — Pontualidade', id: 'gaugePontualidade' },
+        { t: 'Curva de aderencia (plan. acum. x real. acum.)', id: 'chartCurva' },
+        { t: 'Status consolidado', id: 'chartStatus' }
+      ],
+      [
+        { t: 'Distribuicao por estrutura', id: 'chartEstrutura' },
+        { t: 'Backlog critico por tipo', id: 'chartTipo' },
+        { t: 'Pareto — desvios por responsavel', id: 'chartParetoResponsavel' },
+        { t: 'Curva S (acum. plan. x real.)', id: 'chartSCurve' }
+      ],
+      [
+        { t: 'Aderencia por estrutura', id: 'chartStructAdherence' },
+        { t: 'Status — visao proporcional', id: 'chartDonut' },
+        { t: 'Media % concluido x % planejado', id: 'chartAvg' },
+        { t: 'Pareto — causas de atraso', id: 'chartParetoCausa' }
+      ]
+    ];
+    const totalChartPages = grids.length + 1;
+    let pageIdx = 1;
+    grids.forEach((cells) => {
+      doc.addPage();
+      pdfChartPageHeader(doc, W, pageIdx, totalChartPages);
+      pageIdx++;
+      doc.setFillColor(252, 255, 253);
+      doc.rect(0, headerH, W, H - headerH, 'F');
+      cells.forEach((cell, i) => {
+        const col = i % 2;
+        const row = Math.floor(i / 2);
+        const x = m + col * (colW + gap);
+        const y0 = headerH + 8 + row * (rowH + 18);
+        const titleY = y0 - 1;
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 80, 55);
+        doc.text(cell.t, x + 2, titleY, { maxWidth: colW - 4 });
+        doc.setFont('helvetica', 'normal');
+        const cardY = y0 + 3;
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(210, 230, 218);
+        doc.setLineWidth(0.35);
+        doc.roundedRect(x, cardY, colW, rowH + 6, 3, 3, 'FD');
+        doc.setDrawColor(52, 211, 153);
+        doc.setLineWidth(0.6);
+        doc.line(x + 2, cardY + 2, x + 18, cardY + 2);
+        const url = canvasPngDataUrl(cell.id);
+        const imgPad = 2.5;
+        if (url) {
+          try {
+            doc.addImage(url, 'PNG', x + imgPad, cardY + 4, colW - imgPad * 2, rowH - 1);
+          } catch (e) {
+            doc.setFontSize(8);
+            doc.setTextColor(180, 80, 80);
+            doc.text('(imagem indisponivel)', x + 6, cardY + rowH / 2);
+          }
+        }
+      });
+    });
+    doc.addPage();
+    pdfChartPageHeader(doc, W, pageIdx, totalChartPages);
+    doc.setFillColor(252, 255, 253);
+    doc.rect(0, headerH, W, H - headerH, 'F');
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 80, 55);
+    doc.text('Linha do tempo (Gantt)', m + 2, headerH + 8);
+    doc.setFont('helvetica', 'normal');
+    const gUrl = canvasPngDataUrl('chartGantt');
+    const gY = headerH + 12;
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(210, 230, 218);
+    doc.roundedRect(m, gY, W - 2 * m, H - gY - 10, 3, 3, 'FD');
+    doc.setDrawColor(52, 211, 153);
+    doc.line(m + 3, gY + 3, m + 22, gY + 3);
+    if (gUrl) {
+      try {
+        doc.addImage(gUrl, 'PNG', m + 3, gY + 5, W - 2 * m - 6, H - gY - 18);
+      } catch (e) {}
+    }
+  }
+
   function exportJson(data, fileName) {
     const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fileName;a.click();URL.revokeObjectURL(a.href);
@@ -1010,28 +1281,40 @@
   // ===== IMPORT JSON - MERGE (não substitui) =====
   function importJson(file) {
     const r = new FileReader();
+    const onlyNew = $('importOnlyNew') && $('importOnlyNew').checked;
     r.onload = async () => {
       try {
         const arr = JSON.parse(r.result);
         if (!Array.isArray(arr)) throw new Error('Arquivo inválido');
         const existingIds = new Set(activities.map(a => a.id));
-        let added = 0, updated = 0;
+        let added = 0, updated = 0, skipped = 0;
         arr.forEach(item => {
           const normalized = normalizeActivity(item);
           if (existingIds.has(normalized.id)) {
-            // Atualiza existente
-            activities = activities.map(a => a.id === normalized.id ? normalized : a);
+            if (onlyNew) { skipped++; return; }
+            activities = activities.map(a => {
+              if (a.id !== normalized.id) return a;
+              const merged = {
+                ...normalized,
+                photosBefore: mergePhotoArrays(a.photosBefore, normalized.photosBefore),
+                photosAfter: mergePhotoArrays(a.photosAfter, normalized.photosAfter)
+              };
+              return normalizeActivity(merged);
+            });
             updated++;
           } else {
-            // Adiciona novo
             activities.push(normalized);
+            existingIds.add(normalized.id);
             added++;
           }
         });
         await saveActivitiesToDB();
         clearForm();
         render();
-        alert('Importação concluída!\n' + added + ' novas atividades adicionadas\n' + updated + ' atividades atualizadas\nTotal: ' + activities.length);
+        let msg = 'Importação concluída!\n' + added + ' novas\n' + updated + ' atualizadas';
+        if (onlyNew && skipped) msg += '\n' + skipped + ' ignoradas (já existiam)';
+        msg += '\nTotal: ' + activities.length;
+        alert(msg);
       } catch (e) {
         alert('Erro ao importar JSON: ' + e.message);
       }
@@ -1050,12 +1333,15 @@
     doc.text('Aderência: ' + pctText(metrics.adherence) + ' | Pontualidade: ' + pctText(metrics.onTime) + ' | Atividades: ' + metrics.total + ' | Atrasadas: ' + metrics.delayed, 14, 21);
     doc.autoTable({
       startY: 28,
-      head: [['Tipo','Estrutura','Local','Ação','Resp.','Status','%Concl.','%Plan.','Fim plan.','Fim real']],
+      head: [['Tipo','Estrutura','Local','Ação','Resp.','Status','%C','%P','Ader.','Prazo efet.','Δ dias','Fim real']],
       body: data.slice(0, 60).map(a => [
         a.tipo, a.estrutura, a.local, a.acao, a.responsavel, a.status,
         getEffectivePctConc(a).toFixed(0)+'%',
         (calcPlannedProgress(a)*100).toFixed(1)+'%',
-        formatDate(a.fimReprog||a.fimPlan), formatDate(a.fimReal)
+        computeActivityAdherence(a).toFixed(0)+'%',
+        formatDate(a.fimReprog||a.fimPlan),
+        formatDeadlineDelta(a).text,
+        formatDate(a.fimReal)
       ]),
       styles: { fontSize:8, cellPadding:2 },
       headStyles: { fillColor:[30,74,110] },
@@ -1070,11 +1356,14 @@
       if(a.photosAfter?.[0])try{doc.addImage(a.photosAfter[0],'JPEG',78,y,55,40);}catch{}
       doc.setFontSize(8);doc.text('Antes',14,y+44);doc.text('Depois',78,y+44);y+=50;
     }
+    const restoreCharts = await ensureChartsReadyForPdf(data);
+    pdfAppendChartsLandscape(doc, 297, 210);
+    restoreCharts();
     doc.save(fileName);
   }
 
-  // ===== RELATÓRIO APRESENTAÇÃO (PDF estilo slides) =====
-  function generatePresentation(data) {
+  // ===== RELATÓRIO APRESENTAÇÃO (PDF estilo slides + todos os gráficos) =====
+  async function generatePresentation(data) {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
     const metrics = computeMetrics(data);
@@ -1120,12 +1409,14 @@
 
     doc.autoTable({
       startY:42,
-      head:[['#','Ação','Resp.','Status','%C','%P','Prazo']],
+      head:[['#','Ação','Resp.','Status','%C','%P','Ader.','Prazo','Dias']],
       body:data.slice(0,20).map((a,i)=>[
         i+1, (a.acao||'').slice(0,50), a.responsavel, a.status,
         getEffectivePctConc(a).toFixed(0)+'%',
         (calcPlannedProgress(a)*100).toFixed(0)+'%',
-        formatDate(a.fimReprog||a.fimPlan)
+        computeActivityAdherence(a).toFixed(0)+'%',
+        formatDate(a.fimReprog||a.fimPlan),
+        formatDeadlineDelta(a).text
       ]),
       styles:{fontSize:8,cellPadding:3},
       headStyles:{fillColor:[30,74,110],textColor:[255,255,255]},
@@ -1133,26 +1424,11 @@
       margin:{left:15,right:15}
     });
 
-    // Slide 4 - Insights
-    doc.addPage();
-    doc.setFillColor(244,255,247);doc.rect(0,0,W,H,'F');
-    doc.setTextColor(15,81,50);doc.setFontSize(24);doc.text('Leitura Executiva', 20, 30);
-    doc.setDrawColor(16,185,129);doc.line(20,35,W-20,35);
-
-    const insights = [];
-    if (metrics.adherence < 0.8) insights.push('⚠️ Aderência em ' + pctText(metrics.adherence) + ' — abaixo do nível de conforto.');
-    else if (metrics.adherence < 0.95) insights.push('📊 Aderência em ' + pctText(metrics.adherence) + ' — plano perto do controle.');
-    else insights.push('✅ Aderência forte em ' + pctText(metrics.adherence) + '.');
-    if (metrics.delayed > 0) insights.push('🚨 ' + metrics.delayed + ' atividades atrasadas.');
-    if (metrics.reprogramadas > 0) insights.push('🔁 ' + metrics.reprogramadas + ' atividades reprogramadas.');
-    if (metrics.onTime < 0.75 && metrics.concluidas > 0) insights.push('⏱️ Pontualidade em ' + pctText(metrics.onTime) + '.');
-    insights.push('📋 Total de ' + metrics.total + ' atividades na carteira.');
-
-    doc.setTextColor(45,74,58);doc.setFontSize(14);
-    insights.forEach((ins, i) => doc.text(ins, 30, 55 + i * 16));
-
+    const restoreCharts = await ensureChartsReadyForPdf(data);
+    pdfAppendChartsLandscape(doc, W, H);
+    restoreCharts();
     doc.save('NAZA_Apresentacao_' + new Date().toISOString().slice(0,10) + '.pdf');
-    alert('📊 Relatório de apresentação gerado com sucesso!');
+    alert('Relatorio gerado: capa, indicadores, tabela resumo e todos os graficos (mesmos dados do filtro atual).');
   }
 
   // ===== WhatsApp =====
@@ -1172,17 +1448,18 @@
     $('f').addEventListener('submit', async (e) => {
       e.preventDefault();
       const obj = collectForm();
-      if (editingId) { activities = activities.map(a => a.id === editingId ? normalizeActivity(obj) : a); }
-      else { activities.unshift(normalizeActivity(obj)); }
+      const normalized = normalizeActivity(obj);
+      if (editingId) { activities = activities.map(a => a.id === editingId ? normalized : a); }
+      else { activities.unshift(normalized); }
       await saveActivitiesToDB(); clearForm(); render();
     });
     $('btnCancel').onclick = clearForm;
     $('btnNew').onclick = () => { clearForm(); setActiveTab('dashboard'); window.scrollTo({top:0,behavior:'smooth'}); setTimeout(()=>$('f').elements.tipo?.focus(),120); };
     $('btnExport').onclick = () => exportJson(activities, 'naza_plano_aderencia.json');
     $('importFile').addEventListener('change', (e) => e.target.files[0] && importJson(e.target.files[0]));
-    $('btnPdf').onclick = () => exportPdf(getReportActivities(), 'naza_audit_relatorio.pdf');
-    $('btnPresentation').onclick = () => generatePresentation(getReportActivities());
-    $('btnPresentationSel').onclick = () => generatePresentation(getReportActivities());
+    $('btnPdf').onclick = async () => { try { await exportPdf(getReportActivities(), 'naza_audit_relatorio.pdf'); } catch (e) { alert('PDF: ' + (e && e.message)); } };
+    $('btnPresentation').onclick = async () => { try { await generatePresentation(getReportActivities()); } catch (e) { alert('Relatório: ' + (e && e.message)); } };
+    $('btnPresentationSel').onclick = async () => { try { await generatePresentation(getReportActivities()); } catch (e) { alert('Relatório: ' + (e && e.message)); } };
     $('btnReset').onclick = async () => {
       if(!confirm('Apagar toda a base local?'))return;
       activities=getDefaultData().map(normalizeActivity);await saveActivitiesToDB();clearForm();render();
@@ -1198,7 +1475,7 @@
     ['qProg','qReal'].forEach(name => $('f').elements[name].addEventListener('input', syncAutoPercent));
 
     $('btnJsonSelection').onclick = () => exportJson(getReportActivities(), 'naza_selecao.json');
-    $('btnPdfSelection').onclick = () => exportPdf(getReportActivities(), 'naza_selecao.pdf');
+    $('btnPdfSelection').onclick = async () => { try { await exportPdf(getReportActivities(), 'naza_selecao.pdf'); } catch (e) { alert('PDF: ' + (e && e.message)); } };
     $('btnWhatsapp').onclick = shareWhatsappReport;
     $('btnSelectVisible').onclick = () => { const ids=new Set(getVisibleFilteredActivities().map(a=>a.id)); activities=activities.map(a=>ids.has(a.id)?{...a,selected:true}:a); saveActivitiesToDB(); render(); };
     $('btnClearSelection').onclick = () => { activities=activities.map(a=>({...a,selected:false})); saveActivitiesToDB(); render(); };
@@ -1216,6 +1493,7 @@
   // ===== INIT =====
   async function init() {
     if (typeof Chart !== 'undefined') { Chart.defaults.font.family='Inter, sans-serif'; Chart.defaults.color='#64748b'; Chart.defaults.borderColor='#e2e8f0'; }
+    initDatalabelsPlugin();
     await initIndexedDB();
     await loadActivitiesFromDB();
     initFirebase();
